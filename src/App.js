@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Html5QrcodeScanner } from "html5-qrcode"; // NEW LIBRARY
+import React, { useState, useEffect } from "react";
+import { Html5QrcodeScanner } from "html5-qrcode";
 import "./App.css";
 
 function App() {
@@ -11,6 +11,7 @@ function App() {
   // Payment Form State
   const [payVpa, setPayVpa] = useState("");
   const [payNote, setPayNote] = useState("");
+  const [rawQrString, setRawQrString] = useState(""); // NEW: Stores the full original QR data
 
   // Split Bill State
   const [totalAmount, setTotalAmount] = useState("");
@@ -24,7 +25,7 @@ function App() {
   const [pendingShare, setPendingShare] = useState(0);
   const [isSetupDone, setIsSetupDone] = useState(false);
 
-  // --- Auto-Load Data ---
+  // --- Auto-Load ---
   useEffect(() => {
     const savedData = localStorage.getItem("upi_tracker_data");
     if (savedData) {
@@ -36,7 +37,7 @@ function App() {
     }
   }, []);
 
-  // --- Auto-Save Data ---
+  // --- Auto-Save ---
   useEffect(() => {
     if (isSetupDone) {
       const data = { budget, spent, transactions };
@@ -44,17 +45,16 @@ function App() {
     }
   }, [budget, spent, transactions, isSetupDone]);
 
-  // --- QR Scanner Logic (Fixed for Android) ---
+  // --- QR Scanner ---
   useEffect(() => {
     let scanner = null;
-
     if (showScanner) {
-      // Small delay to ensure the div exists
+      // Delay to let DOM render the #reader div
       setTimeout(() => {
         scanner = new Html5QrcodeScanner(
           "reader",
           { fps: 10, qrbox: 250 },
-          /* verbose= */ false
+          false
         );
 
         scanner.render(
@@ -63,43 +63,42 @@ function App() {
             scanner.clear();
             setShowScanner(false);
           },
-          (errorMessage) => {
-            // ignore scan errors, they happen while searching
+          (err) => {
+            /* ignore errors */
           }
         );
       }, 100);
     }
-
     return () => {
-      if (scanner) {
-        scanner
-          .clear()
-          .catch((error) => console.error("Failed to clear scanner", error));
-      }
+      if (scanner) scanner.clear().catch(console.error);
     };
   }, [showScanner]);
 
   const handleScanSuccess = (text) => {
     if (text) {
-      // Logic to extract UPI ID
+      console.log("Scanned:", text);
+
+      // 1. Is it a UPI link?
       if (text.startsWith("upi://")) {
+        // SAVE THE FULL RAW STRING. This contains all the hidden merchant codes.
+        setRawQrString(text);
+
+        // Extract just the VPA for display purposes
         try {
           const params = new URLSearchParams(text.split("?")[1]);
-          const pa = params.get("pa"); // Payee Address
+          const pa = params.get("pa");
+          if (pa) setPayVpa(pa);
 
-          if (pa) {
-            setPayVpa(pa);
-            // Optional: Auto-fill note if 'pn' (name) exists in QR, but don't send it in payment
-            const pn = params.get("pn");
-            if (pn && !payNote) setPayNote(pn);
-          }
-        } catch (err) {
-          console.error("QR Parse Error", err);
+          const pn = params.get("pn");
+          if (pn) setPayNote(pn); // Show the shop name
+        } catch (e) {
+          setPayVpa("Scanned Merchant");
         }
-      } else if (text.includes("@")) {
-        setPayVpa(text); // Fallback for plain text VPAs
-      } else {
-        alert("Invalid UPI QR Code");
+      }
+      // 2. Or just a plain VPA? (Manual or weird QR)
+      else if (text.includes("@")) {
+        setPayVpa(text);
+        setRawQrString(""); // Clear raw string since it's just an ID
       }
     }
   };
@@ -119,21 +118,43 @@ function App() {
     const amountToDeduct =
       isSplit && myShare ? parseFloat(myShare) : amountToPay;
 
-    if (!amountToPay || amountToPay <= 0 || !payVpa) {
-      alert("Please enter a valid Amount and UPI ID");
+    if (!amountToPay || amountToPay <= 0) {
+      alert("Please enter a valid Amount");
       return;
     }
 
-    // --- FIX 1: SIMPLIFIED UPI LINK ---
-    // Removed 'pn' (Payee Name) to fix "Limit Exceeded" error
-    const upiLink = `upi://pay?pa=${payVpa}&am=${amountToPay}&cu=INR`;
+    let upiLink = "";
+
+    // STRATEGY:
+    // If we have a raw scanned string, use IT (preserves merchant codes).
+    // If not, build a fresh one (for manual entry).
+
+    if (rawQrString && rawQrString.includes(payVpa)) {
+      // 1. Use the original scanned string
+      // Just append the amount to it.
+      if (rawQrString.includes("&am=")) {
+        // If amount was already in QR, replace it (rare, but possible)
+        upiLink = rawQrString.replace(/&am=[^&]*/, `&am=${amountToPay}`);
+      } else {
+        // Otherwise, simply append it
+        upiLink = `${rawQrString}&am=${amountToPay}`;
+      }
+    } else {
+      // 2. Manual Entry Fallback
+      if (!payVpa) {
+        alert("Enter UPI ID");
+        return;
+      }
+      upiLink = `upi://pay?pa=${payVpa}&am=${amountToPay}&cu=INR`;
+      if (payNote) upiLink += `&tn=${encodeURIComponent(payNote)}`;
+    }
 
     // Open App
     window.location.href = upiLink;
 
     setPendingTotal(amountToPay);
     setPendingShare(amountToDeduct);
-    setTimeout(() => setShowModal(true), 1000);
+    setTimeout(() => setShowModal(true), 1500);
   };
 
   const confirmTransaction = (confirmed) => {
@@ -145,28 +166,29 @@ function App() {
         date: new Date().toLocaleDateString(),
         fullAmount: pendingTotal,
         myShare: pendingShare,
-        note: payNote,
+        note: payNote || "Payment",
         isSplit: pendingTotal !== pendingShare,
       };
       setSpent(newSpent);
       setTransactions([newTransaction, ...transactions]);
 
+      // Reset
       setTotalAmount("");
       setMyShare("");
       setPayNote("");
       setPayVpa("");
+      setRawQrString("");
       setIsSplit(false);
     }
   };
 
   const startNewMonth = () => {
-    if (window.confirm("Start a New Month? This resets history.")) {
+    if (window.confirm("Start New Month?")) {
       setSpent(0);
       setTransactions([]);
     }
   };
 
-  // --- Render ---
   const budgetLeft = budget - spent;
   const progressPercent = Math.min((spent / budget) * 100, 100);
   const progressColor = progressPercent >= 100 ? "#ff4d4d" : "#4CAF50";
@@ -178,9 +200,8 @@ function App() {
         <div className="scanner-overlay">
           <div className="scanner-box">
             <h3>Scan UPI QR</h3>
-            {/* THIS DIV IS REQUIRED FOR THE NEW LIBRARY */}
-            <div id="reader" width="100%"></div>
-
+            {/* The ID 'reader' is used by the library */}
+            <div id="reader"></div>
             <button
               className="btn-danger"
               onClick={() => setShowScanner(false)}
@@ -195,10 +216,9 @@ function App() {
       {!isSetupDone && (
         <div className="card setup-card">
           <h2>Welcome</h2>
-          <p>Set your monthly budget limit</p>
           <input
             type="number"
-            placeholder="5000"
+            placeholder="Set Budget (e.g. 5000)"
             value={budget}
             onChange={(e) => setBudget(parseFloat(e.target.value))}
           />
@@ -228,30 +248,39 @@ function App() {
           </div>
 
           <div className="card payment-form">
-            <h3>Make a Payment</h3>
-
-            <label>Payee UPI ID</label>
-            <div style={{ display: "flex", gap: "10px", marginBottom: "15px" }}>
-              <input
-                type="text"
-                placeholder="merchant@upi"
-                value={payVpa}
-                onChange={(e) => setPayVpa(e.target.value)}
-                style={{ marginBottom: 0 }}
-              />
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <h3>Make a Payment</h3>
+              {/* Scan Button */}
               <button
                 onClick={() => setShowScanner(true)}
                 style={{
-                  width: "60px",
-                  padding: "0",
-                  height: "44px",
+                  width: "auto",
+                  padding: "8px 15px",
                   background: "#333",
-                  fontSize: "1.2rem",
+                  fontSize: "0.9rem",
+                  marginBottom: "10px",
                 }}
               >
-                📷
+                📷 Scan QR
               </button>
             </div>
+
+            <label>Payee UPI ID</label>
+            <input
+              type="text"
+              placeholder="Or enter manually..."
+              value={payVpa}
+              onChange={(e) => {
+                setPayVpa(e.target.value);
+                setRawQrString(""); // Clear raw string if user edits manually
+              }}
+            />
 
             <label>Total Amount (₹)</label>
             <input
@@ -307,13 +336,13 @@ function App() {
           <div className="history-section">
             <h4>Recent Transactions</h4>
             {transactions.length === 0 ? (
-              <p className="label">No transactions yet.</p>
+              <p className="label">No transactions.</p>
             ) : (
               <ul>
                 {transactions.slice(0, 5).map((t) => (
                   <li key={t.id} className="history-item">
                     <div>
-                      <span>{t.note || "Payment"}</span>
+                      <span>{t.note}</span>
                       {t.isSplit && (
                         <span
                           style={{
@@ -322,7 +351,7 @@ function App() {
                             color: "#888",
                           }}
                         >
-                          Total Bill: ₹{t.fullAmount}
+                          Full Bill: ₹{t.fullAmount}
                         </span>
                       )}
                     </div>
@@ -332,7 +361,6 @@ function App() {
               </ul>
             )}
           </div>
-
           <button className="btn-reset" onClick={startNewMonth}>
             Start New Month
           </button>
@@ -343,7 +371,7 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <h3>Confirm Payment</h3>
-            <p>Did you complete the payment?</p>
+            <p>Did the payment complete?</p>
             <div className="btn-group">
               <button
                 className="btn-danger"
