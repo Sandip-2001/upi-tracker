@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/upi-tracker/static/css/main.eb095710.css",
-    "main.js": "/upi-tracker/static/js/main.312bc163.js",
+    "main.js": "/upi-tracker/static/js/main.948b50a1.js",
     "static/js/453.7833ebb4.chunk.js": "/upi-tracker/static/js/453.7833ebb4.chunk.js",
     "index.html": "/upi-tracker/index.html",
     "main.eb095710.css.map": "/upi-tracker/static/css/main.eb095710.css.map",
-    "main.312bc163.js.map": "/upi-tracker/static/js/main.312bc163.js.map",
+    "main.948b50a1.js.map": "/upi-tracker/static/js/main.948b50a1.js.map",
     "453.7833ebb4.chunk.js.map": "/upi-tracker/static/js/453.7833ebb4.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.eb095710.css",
-    "static/js/main.312bc163.js"
+    "static/js/main.948b50a1.js"
   ]
 }
