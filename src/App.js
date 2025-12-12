@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
+import React, { useState, useEffect } from "react";
+import { Html5Qrcode } from "html5-qrcode";
 import "./App.css";
 
 function App() {
@@ -11,7 +11,7 @@ function App() {
   // Payment Form
   const [payVpa, setPayVpa] = useState("");
   const [payNote, setPayNote] = useState("");
-  const [scannedParams, setScannedParams] = useState(null); // Store all QR data object
+  const [rawQrString, setRawQrString] = useState(""); // Store exact raw scan
 
   // Split Bill
   const [totalAmount, setTotalAmount] = useState("");
@@ -24,7 +24,7 @@ function App() {
   const [pendingTotal, setPendingTotal] = useState(0);
   const [pendingShare, setPendingShare] = useState(0);
   const [isSetupDone, setIsSetupDone] = useState(false);
-  const [debugLog, setDebugLog] = useState(""); // Debug info
+  const [debugLog, setDebugLog] = useState("");
 
   // --- Auto-Load ---
   useEffect(() => {
@@ -46,83 +46,57 @@ function App() {
     }
   }, [budget, spent, transactions, isSetupDone]);
 
-  // --- ROBUST QR SCANNER LOGIC ---
+  // --- QR Scanner ---
   useEffect(() => {
     let html5QrCode;
-
     if (showScanner) {
-      // 1. Initialize the library
       html5QrCode = new Html5Qrcode("reader-container");
-
       const config = { fps: 10, qrbox: { width: 250, height: 250 } };
 
-      // 2. Start Camera (Back Camera Preference)
       html5QrCode
         .start(
           { facingMode: "environment" },
           config,
           (decodedText) => {
-            // SUCCESS CALLBACK
             handleScanSuccess(decodedText);
-
-            // Stop camera immediately after scan
-            html5QrCode
-              .stop()
-              .then(() => {
-                html5QrCode.clear();
-                setShowScanner(false);
-              })
-              .catch((err) => console.error("Stop failed", err));
+            html5QrCode.stop().then(() => {
+              html5QrCode.clear();
+              setShowScanner(false);
+            });
           },
-          (errorMessage) => {
-            // Ignore parse errors, they happen every frame
-          }
+          () => {}
         )
         .catch((err) => {
-          setDebugLog("Camera Error: " + err);
-          alert("Camera failed to start. Check permissions.");
+          setDebugLog("Cam Error: " + err);
+          alert("Camera failed. Ensure you are on HTTPS.");
           setShowScanner(false);
         });
     }
-
-    // Cleanup when closing component
     return () => {
       if (html5QrCode && html5QrCode.isScanning) {
-        html5QrCode.stop().catch((e) => console.error(e));
+        html5QrCode.stop().catch(() => {});
       }
     };
   }, [showScanner]);
 
   const handleScanSuccess = (text) => {
-    setDebugLog("Scanned: " + text); // Show user what was scanned
+    // 1. Check if it's a UPI URL
+    if (text.includes("pa=") || text.includes("@")) {
+      // 2. Save the RAW string exactly as it is
+      setRawQrString(text);
+      setDebugLog("Raw: " + text);
 
-    if (text.startsWith("upi://")) {
+      // 3. Extract just the ID for display (visual only)
       try {
-        // 1. Parse the URL
-        const urlObj = new URL(text);
-        const params = new URLSearchParams(urlObj.search);
-
-        // 2. Extract needed fields
-        const pa = params.get("pa");
-        const pn = params.get("pn");
-
-        if (pa) {
-          setPayVpa(pa);
-          if (pn) setPayNote(pn);
-
-          // 3. Store ALL params to preserve merchant codes (mc, tr, etc.)
-          const paramsObj = {};
-          for (const [key, value] of params.entries()) {
-            paramsObj[key] = value;
-          }
-          setScannedParams(paramsObj);
+        if (text.startsWith("upi://")) {
+          const url = new URL(text);
+          setPayVpa(url.searchParams.get("pa") || "Merchant");
+        } else {
+          setPayVpa(text); // Fallback for plain VPA
         }
       } catch (e) {
-        setDebugLog("Parse Error: " + e.message);
+        setPayVpa("Merchant QR");
       }
-    } else if (text.includes("@")) {
-      setPayVpa(text);
-      setScannedParams(null); // Not a merchant QR, just an ID
     }
   };
 
@@ -142,41 +116,44 @@ function App() {
       isSplit && myShare ? parseFloat(myShare) : amountToPay;
 
     if (!amountToPay || amountToPay <= 0) {
-      alert("Please enter a valid Amount");
+      alert("Enter valid Amount");
       return;
     }
 
-    // --- RECONSTRUCT VALID UPI URL ---
+    // --- THE FIX: SURGICAL APPEND ---
     let finalUrl = "";
 
-    if (scannedParams && scannedParams.pa === payVpa) {
-      // CASE 1: MERCHANT QR (Use original params + inject amount)
-      const newParams = new URLSearchParams();
+    // Format amount to 2 decimal places (Critical for some banks)
+    const formattedAmount = amountToPay.toFixed(2);
 
-      // Add back all original merchant codes (mc, tr, mode, etc.)
-      Object.keys(scannedParams).forEach((key) => {
-        // Skip 'am' (amount) and 'pn' (name) if we want to override them
-        if (key !== "am") {
-          newParams.append(key, scannedParams[key]);
-        }
-      });
+    if (rawQrString && rawQrString.includes("upi://")) {
+      // CASE 1: SCANNED QR
+      // We take the original string and append amount to it.
+      // We do NOT reconstruct it, preserving the 'sign' and 'mc' order.
 
-      // Add our Amount & Currency
-      newParams.append("am", amountToPay);
-      newParams.append("cu", "INR");
+      finalUrl = rawQrString;
 
-      finalUrl = `upi://pay?${newParams.toString()}`;
+      // If the QR already has an amount (e.g. dynamic QR), remove it first
+      // This regex replaces '&am=...' or '?am=...' with nothing
+      finalUrl = finalUrl.replace(/([?&])am=[^&]*(&|$)/, "$1");
+      finalUrl = finalUrl.replace(/([?&])cu=[^&]*(&|$)/, "$1"); // Remove currency too
+
+      // Now append our Amount
+      // Check if URL has query params already (contains '?')
+      const separator = finalUrl.includes("?") ? "&" : "?";
+
+      finalUrl += `${separator}am=${formattedAmount}&cu=INR`;
     } else {
-      // CASE 2: MANUAL ENTRY (Simple Link)
+      // CASE 2: MANUAL ENTRY
       if (!payVpa) {
         alert("Enter UPI ID");
         return;
       }
-      finalUrl = `upi://pay?pa=${payVpa}&am=${amountToPay}&cu=INR`;
+      finalUrl = `upi://pay?pa=${payVpa}&am=${formattedAmount}&cu=INR`;
       if (payNote) finalUrl += `&tn=${encodeURIComponent(payNote)}`;
     }
 
-    setDebugLog("Launching: " + finalUrl); // Debug
+    setDebugLog("Final Link: " + finalUrl);
 
     // Open App
     window.location.href = finalUrl;
@@ -205,7 +182,7 @@ function App() {
       setMyShare("");
       setPayNote("");
       setPayVpa("");
-      setScannedParams(null);
+      setRawQrString("");
       setIsSplit(false);
     }
   };
@@ -228,10 +205,7 @@ function App() {
         <div className="scanner-overlay">
           <div className="scanner-box">
             <h3>Scan UPI QR</h3>
-
-            {/* CONTAINER FOR CAMERA - FIXED ID */}
             <div id="reader-container"></div>
-
             <button
               className="btn-danger"
               onClick={() => setShowScanner(false)}
@@ -307,7 +281,7 @@ function App() {
               value={payVpa}
               onChange={(e) => {
                 setPayVpa(e.target.value);
-                setScannedParams(null); // Clear cached merchant params if user edits ID
+                setRawQrString("");
               }}
             />
 
@@ -361,17 +335,17 @@ function App() {
               PAY NOW
             </button>
 
-            {/* DEBUG LOG - VISIBLE TO USER FOR TROUBLESHOOTING */}
             {debugLog && (
               <p
                 style={{
-                  fontSize: "0.7rem",
-                  color: "#666",
+                  fontSize: "0.6rem",
+                  color: "#555",
                   marginTop: "10px",
                   wordBreak: "break-all",
+                  fontFamily: "monospace",
                 }}
               >
-                Debug: {debugLog}
+                {debugLog}
               </p>
             )}
           </div>
