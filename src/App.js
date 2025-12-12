@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { Html5QrcodeScanner } from "html5-qrcode";
+import React, { useState, useEffect, useRef } from "react";
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import "./App.css";
 
 function App() {
@@ -8,22 +8,23 @@ function App() {
   const [spent, setSpent] = useState(0);
   const [transactions, setTransactions] = useState([]);
 
-  // Payment Form State
+  // Payment Form
   const [payVpa, setPayVpa] = useState("");
   const [payNote, setPayNote] = useState("");
-  const [rawQrString, setRawQrString] = useState(""); // NEW: Stores the full original QR data
+  const [scannedParams, setScannedParams] = useState(null); // Store all QR data object
 
-  // Split Bill State
+  // Split Bill
   const [totalAmount, setTotalAmount] = useState("");
   const [myShare, setMyShare] = useState("");
   const [isSplit, setIsSplit] = useState(false);
 
-  // UI State
+  // UI
   const [showModal, setShowModal] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [pendingShare, setPendingShare] = useState(0);
   const [isSetupDone, setIsSetupDone] = useState(false);
+  const [debugLog, setDebugLog] = useState(""); // Debug info
 
   // --- Auto-Load ---
   useEffect(() => {
@@ -45,61 +46,83 @@ function App() {
     }
   }, [budget, spent, transactions, isSetupDone]);
 
-  // --- QR Scanner ---
+  // --- ROBUST QR SCANNER LOGIC ---
   useEffect(() => {
-    let scanner = null;
-    if (showScanner) {
-      // Delay to let DOM render the #reader div
-      setTimeout(() => {
-        scanner = new Html5QrcodeScanner(
-          "reader",
-          { fps: 10, qrbox: 250 },
-          false
-        );
+    let html5QrCode;
 
-        scanner.render(
+    if (showScanner) {
+      // 1. Initialize the library
+      html5QrCode = new Html5Qrcode("reader-container");
+
+      const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+      // 2. Start Camera (Back Camera Preference)
+      html5QrCode
+        .start(
+          { facingMode: "environment" },
+          config,
           (decodedText) => {
+            // SUCCESS CALLBACK
             handleScanSuccess(decodedText);
-            scanner.clear();
-            setShowScanner(false);
+
+            // Stop camera immediately after scan
+            html5QrCode
+              .stop()
+              .then(() => {
+                html5QrCode.clear();
+                setShowScanner(false);
+              })
+              .catch((err) => console.error("Stop failed", err));
           },
-          (err) => {
-            /* ignore errors */
+          (errorMessage) => {
+            // Ignore parse errors, they happen every frame
           }
-        );
-      }, 100);
+        )
+        .catch((err) => {
+          setDebugLog("Camera Error: " + err);
+          alert("Camera failed to start. Check permissions.");
+          setShowScanner(false);
+        });
     }
+
+    // Cleanup when closing component
     return () => {
-      if (scanner) scanner.clear().catch(console.error);
+      if (html5QrCode && html5QrCode.isScanning) {
+        html5QrCode.stop().catch((e) => console.error(e));
+      }
     };
   }, [showScanner]);
 
   const handleScanSuccess = (text) => {
-    if (text) {
-      console.log("Scanned:", text);
+    setDebugLog("Scanned: " + text); // Show user what was scanned
 
-      // 1. Is it a UPI link?
-      if (text.startsWith("upi://")) {
-        // SAVE THE FULL RAW STRING. This contains all the hidden merchant codes.
-        setRawQrString(text);
+    if (text.startsWith("upi://")) {
+      try {
+        // 1. Parse the URL
+        const urlObj = new URL(text);
+        const params = new URLSearchParams(urlObj.search);
 
-        // Extract just the VPA for display purposes
-        try {
-          const params = new URLSearchParams(text.split("?")[1]);
-          const pa = params.get("pa");
-          if (pa) setPayVpa(pa);
+        // 2. Extract needed fields
+        const pa = params.get("pa");
+        const pn = params.get("pn");
 
-          const pn = params.get("pn");
-          if (pn) setPayNote(pn); // Show the shop name
-        } catch (e) {
-          setPayVpa("Scanned Merchant");
+        if (pa) {
+          setPayVpa(pa);
+          if (pn) setPayNote(pn);
+
+          // 3. Store ALL params to preserve merchant codes (mc, tr, etc.)
+          const paramsObj = {};
+          for (const [key, value] of params.entries()) {
+            paramsObj[key] = value;
+          }
+          setScannedParams(paramsObj);
         }
+      } catch (e) {
+        setDebugLog("Parse Error: " + e.message);
       }
-      // 2. Or just a plain VPA? (Manual or weird QR)
-      else if (text.includes("@")) {
-        setPayVpa(text);
-        setRawQrString(""); // Clear raw string since it's just an ID
-      }
+    } else if (text.includes("@")) {
+      setPayVpa(text);
+      setScannedParams(null); // Not a merchant QR, just an ID
     }
   };
 
@@ -123,34 +146,40 @@ function App() {
       return;
     }
 
-    let upiLink = "";
+    // --- RECONSTRUCT VALID UPI URL ---
+    let finalUrl = "";
 
-    // STRATEGY:
-    // If we have a raw scanned string, use IT (preserves merchant codes).
-    // If not, build a fresh one (for manual entry).
+    if (scannedParams && scannedParams.pa === payVpa) {
+      // CASE 1: MERCHANT QR (Use original params + inject amount)
+      const newParams = new URLSearchParams();
 
-    if (rawQrString && rawQrString.includes(payVpa)) {
-      // 1. Use the original scanned string
-      // Just append the amount to it.
-      if (rawQrString.includes("&am=")) {
-        // If amount was already in QR, replace it (rare, but possible)
-        upiLink = rawQrString.replace(/&am=[^&]*/, `&am=${amountToPay}`);
-      } else {
-        // Otherwise, simply append it
-        upiLink = `${rawQrString}&am=${amountToPay}`;
-      }
+      // Add back all original merchant codes (mc, tr, mode, etc.)
+      Object.keys(scannedParams).forEach((key) => {
+        // Skip 'am' (amount) and 'pn' (name) if we want to override them
+        if (key !== "am") {
+          newParams.append(key, scannedParams[key]);
+        }
+      });
+
+      // Add our Amount & Currency
+      newParams.append("am", amountToPay);
+      newParams.append("cu", "INR");
+
+      finalUrl = `upi://pay?${newParams.toString()}`;
     } else {
-      // 2. Manual Entry Fallback
+      // CASE 2: MANUAL ENTRY (Simple Link)
       if (!payVpa) {
         alert("Enter UPI ID");
         return;
       }
-      upiLink = `upi://pay?pa=${payVpa}&am=${amountToPay}&cu=INR`;
-      if (payNote) upiLink += `&tn=${encodeURIComponent(payNote)}`;
+      finalUrl = `upi://pay?pa=${payVpa}&am=${amountToPay}&cu=INR`;
+      if (payNote) finalUrl += `&tn=${encodeURIComponent(payNote)}`;
     }
 
+    setDebugLog("Launching: " + finalUrl); // Debug
+
     // Open App
-    window.location.href = upiLink;
+    window.location.href = finalUrl;
 
     setPendingTotal(amountToPay);
     setPendingShare(amountToDeduct);
@@ -172,12 +201,11 @@ function App() {
       setSpent(newSpent);
       setTransactions([newTransaction, ...transactions]);
 
-      // Reset
       setTotalAmount("");
       setMyShare("");
       setPayNote("");
       setPayVpa("");
-      setRawQrString("");
+      setScannedParams(null);
       setIsSplit(false);
     }
   };
@@ -200,8 +228,10 @@ function App() {
         <div className="scanner-overlay">
           <div className="scanner-box">
             <h3>Scan UPI QR</h3>
-            {/* The ID 'reader' is used by the library */}
-            <div id="reader"></div>
+
+            {/* CONTAINER FOR CAMERA - FIXED ID */}
+            <div id="reader-container"></div>
+
             <button
               className="btn-danger"
               onClick={() => setShowScanner(false)}
@@ -256,7 +286,6 @@ function App() {
               }}
             >
               <h3>Make a Payment</h3>
-              {/* Scan Button */}
               <button
                 onClick={() => setShowScanner(true)}
                 style={{
@@ -267,7 +296,7 @@ function App() {
                   marginBottom: "10px",
                 }}
               >
-                📷 Scan QR
+                📷 Scan
               </button>
             </div>
 
@@ -278,7 +307,7 @@ function App() {
               value={payVpa}
               onChange={(e) => {
                 setPayVpa(e.target.value);
-                setRawQrString(""); // Clear raw string if user edits manually
+                setScannedParams(null); // Clear cached merchant params if user edits ID
               }}
             />
 
@@ -331,6 +360,20 @@ function App() {
             <button className="btn-primary" onClick={initiatePayment}>
               PAY NOW
             </button>
+
+            {/* DEBUG LOG - VISIBLE TO USER FOR TROUBLESHOOTING */}
+            {debugLog && (
+              <p
+                style={{
+                  fontSize: "0.7rem",
+                  color: "#666",
+                  marginTop: "10px",
+                  wordBreak: "break-all",
+                }}
+              >
+                Debug: {debugLog}
+              </p>
+            )}
           </div>
 
           <div className="history-section">
@@ -351,7 +394,7 @@ function App() {
                             color: "#888",
                           }}
                         >
-                          Full Bill: ₹{t.fullAmount}
+                          Full: ₹{t.fullAmount}
                         </span>
                       )}
                     </div>
@@ -362,7 +405,7 @@ function App() {
             )}
           </div>
           <button className="btn-reset" onClick={startNewMonth}>
-            Start New Month
+            New Month
           </button>
         </div>
       )}
@@ -371,7 +414,7 @@ function App() {
         <div className="modal-overlay">
           <div className="modal-content">
             <h3>Confirm Payment</h3>
-            <p>Did the payment complete?</p>
+            <p>Did it work?</p>
             <div className="btn-group">
               <button
                 className="btn-danger"
