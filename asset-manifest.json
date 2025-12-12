@@ -1,0 +1,15 @@
+{
+  "files": {
+    "main.css": "/Sandip-2001/upi-tracker.git/static/css/main.eb095710.css",
+    "main.js": "/Sandip-2001/upi-tracker.git/static/js/main.8aea8881.js",
+    "static/js/453.7833ebb4.chunk.js": "/Sandip-2001/upi-tracker.git/static/js/453.7833ebb4.chunk.js",
+    "index.html": "/Sandip-2001/upi-tracker.git/index.html",
+    "main.eb095710.css.map": "/Sandip-2001/upi-tracker.git/static/css/main.eb095710.css.map",
+    "main.8aea8881.js.map": "/Sandip-2001/upi-tracker.git/static/js/main.8aea8881.js.map",
+    "453.7833ebb4.chunk.js.map": "/Sandip-2001/upi-tracker.git/static/js/453.7833ebb4.chunk.js.map"
+  },
+  "entrypoints": [
+    "static/css/main.eb095710.css",
+    "static/js/main.8aea8881.js"
+  ]
+}
