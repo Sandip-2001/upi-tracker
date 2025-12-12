@@ -2,7 +2,7 @@
   "name": "upi-tracker",
   "version": "0.1.0",
   "private": true,
-  "homepage": "https://github.com/Sandip-2001/upi-tracker.git",
+  "homepage": "https://sandip-2001.github.io/upi-tracker",
   "dependencies": {
     "@testing-library/dom": "^10.4.1",
     "@testing-library/jest-dom": "^6.9.1",
