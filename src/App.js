@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from "react";
-import { Html5Qrcode } from "html5-qrcode";
 import "./App.css";
 
 function App() {
@@ -8,23 +7,19 @@ function App() {
   const [spent, setSpent] = useState(0);
   const [transactions, setTransactions] = useState([]);
 
-  // Payment Form
-  const [payVpa, setPayVpa] = useState("");
+  // Payment Form (Simplified)
   const [payNote, setPayNote] = useState("");
-  const [rawQrString, setRawQrString] = useState(""); // Store exact raw scan
 
-  // Split Bill
+  // Split Bill State
   const [totalAmount, setTotalAmount] = useState("");
   const [myShare, setMyShare] = useState("");
   const [isSplit, setIsSplit] = useState(false);
 
-  // UI
+  // UI State
   const [showModal, setShowModal] = useState(false);
-  const [showScanner, setShowScanner] = useState(false);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [pendingShare, setPendingShare] = useState(0);
   const [isSetupDone, setIsSetupDone] = useState(false);
-  const [debugLog, setDebugLog] = useState("");
 
   // --- Auto-Load ---
   useEffect(() => {
@@ -46,60 +41,6 @@ function App() {
     }
   }, [budget, spent, transactions, isSetupDone]);
 
-  // --- QR Scanner ---
-  useEffect(() => {
-    let html5QrCode;
-    if (showScanner) {
-      html5QrCode = new Html5Qrcode("reader-container");
-      const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-
-      html5QrCode
-        .start(
-          { facingMode: "environment" },
-          config,
-          (decodedText) => {
-            handleScanSuccess(decodedText);
-            html5QrCode.stop().then(() => {
-              html5QrCode.clear();
-              setShowScanner(false);
-            });
-          },
-          () => {}
-        )
-        .catch((err) => {
-          setDebugLog("Cam Error: " + err);
-          alert("Camera failed. Ensure you are on HTTPS.");
-          setShowScanner(false);
-        });
-    }
-    return () => {
-      if (html5QrCode && html5QrCode.isScanning) {
-        html5QrCode.stop().catch(() => {});
-      }
-    };
-  }, [showScanner]);
-
-  const handleScanSuccess = (text) => {
-    // 1. Check if it's a UPI URL
-    if (text.includes("pa=") || text.includes("@")) {
-      // 2. Save the RAW string exactly as it is
-      setRawQrString(text);
-      setDebugLog("Raw: " + text);
-
-      // 3. Extract just the ID for display (visual only)
-      try {
-        if (text.startsWith("upi://")) {
-          const url = new URL(text);
-          setPayVpa(url.searchParams.get("pa") || "Merchant");
-        } else {
-          setPayVpa(text); // Fallback for plain VPA
-        }
-      } catch (e) {
-        setPayVpa("Merchant QR");
-      }
-    }
-  };
-
   // --- Handlers ---
   const handleSetup = () => {
     if (budget > 0) setIsSetupDone(true);
@@ -110,57 +51,28 @@ function App() {
     if (isSplit) setMyShare("");
   };
 
-  const initiatePayment = () => {
+  const handleStartPayment = () => {
     const amountToPay = parseFloat(totalAmount);
+    // If split is ON, deduct myShare. If OFF, deduct totalAmount.
     const amountToDeduct =
       isSplit && myShare ? parseFloat(myShare) : amountToPay;
 
     if (!amountToPay || amountToPay <= 0) {
-      alert("Enter valid Amount");
+      alert("Please enter a valid Amount");
       return;
     }
 
-    // --- THE FIX: SURGICAL APPEND ---
-    let finalUrl = "";
-
-    // Format amount to 2 decimal places (Critical for some banks)
-    const formattedAmount = amountToPay.toFixed(2);
-
-    if (rawQrString && rawQrString.includes("upi://")) {
-      // CASE 1: SCANNED QR
-      // We take the original string and append amount to it.
-      // We do NOT reconstruct it, preserving the 'sign' and 'mc' order.
-
-      finalUrl = rawQrString;
-
-      // If the QR already has an amount (e.g. dynamic QR), remove it first
-      // This regex replaces '&am=...' or '?am=...' with nothing
-      finalUrl = finalUrl.replace(/([?&])am=[^&]*(&|$)/, "$1");
-      finalUrl = finalUrl.replace(/([?&])cu=[^&]*(&|$)/, "$1"); // Remove currency too
-
-      // Now append our Amount
-      // Check if URL has query params already (contains '?')
-      const separator = finalUrl.includes("?") ? "&" : "?";
-
-      finalUrl += `${separator}am=${formattedAmount}&cu=INR`;
-    } else {
-      // CASE 2: MANUAL ENTRY
-      if (!payVpa) {
-        alert("Enter UPI ID");
-        return;
-      }
-      finalUrl = `upi://pay?pa=${payVpa}&am=${formattedAmount}&cu=INR`;
-      if (payNote) finalUrl += `&tn=${encodeURIComponent(payNote)}`;
-    }
-
-    setDebugLog("Final Link: " + finalUrl);
-
-    // Open App
-    window.location.href = finalUrl;
-
+    // 1. Store the amounts temporarily
     setPendingTotal(amountToPay);
     setPendingShare(amountToDeduct);
-    setTimeout(() => setShowModal(true), 1500);
+
+    // 2. Try to open the UPI App Chooser
+    // We use a generic 'upi://pay' link. On many phones, this opens the app list.
+    // Even if it fails to open an app, we still show the modal.
+    window.location.href = "upi://pay";
+
+    // 3. Show Confirmation Modal immediately
+    setShowModal(true);
   };
 
   const confirmTransaction = (confirmed) => {
@@ -172,23 +84,24 @@ function App() {
         date: new Date().toLocaleDateString(),
         fullAmount: pendingTotal,
         myShare: pendingShare,
-        note: payNote || "Payment",
+        note: payNote || "Expense",
         isSplit: pendingTotal !== pendingShare,
       };
       setSpent(newSpent);
       setTransactions([newTransaction, ...transactions]);
 
+      // Reset Form
       setTotalAmount("");
       setMyShare("");
       setPayNote("");
-      setPayVpa("");
-      setRawQrString("");
       setIsSplit(false);
     }
   };
 
   const startNewMonth = () => {
-    if (window.confirm("Start New Month?")) {
+    if (
+      window.confirm("Start New Month? This resets your spending history to 0.")
+    ) {
       setSpent(0);
       setTransactions([]);
     }
@@ -200,23 +113,6 @@ function App() {
 
   return (
     <div className="app-container">
-      {/* SCANNER OVERLAY */}
-      {showScanner && (
-        <div className="scanner-overlay">
-          <div className="scanner-box">
-            <h3>Scan UPI QR</h3>
-            <div id="reader-container"></div>
-            <button
-              className="btn-danger"
-              onClick={() => setShowScanner(false)}
-              style={{ marginTop: "20px" }}
-            >
-              Close Camera
-            </button>
-          </div>
-        </div>
-      )}
-
       {!isSetupDone && (
         <div className="card setup-card">
           <h2>Welcome</h2>
@@ -234,6 +130,7 @@ function App() {
 
       {isSetupDone && (
         <div className="dashboard">
+          {/* BUDGET CARD */}
           <div className="card">
             <p className="label">Total Spent (My Share)</p>
             <div className="big-number">₹{spent}</div>
@@ -251,39 +148,9 @@ function App() {
             </div>
           </div>
 
+          {/* PAYMENT CARD */}
           <div className="card payment-form">
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
-              <h3>Make a Payment</h3>
-              <button
-                onClick={() => setShowScanner(true)}
-                style={{
-                  width: "auto",
-                  padding: "8px 15px",
-                  background: "#333",
-                  fontSize: "0.9rem",
-                  marginBottom: "10px",
-                }}
-              >
-                📷 Scan
-              </button>
-            </div>
-
-            <label>Payee UPI ID</label>
-            <input
-              type="text"
-              placeholder="Or enter manually..."
-              value={payVpa}
-              onChange={(e) => {
-                setPayVpa(e.target.value);
-                setRawQrString("");
-              }}
-            />
+            <h3>Add Expense</h3>
 
             <label>Total Amount (₹)</label>
             <input
@@ -291,6 +158,11 @@ function App() {
               placeholder="0"
               value={totalAmount}
               onChange={(e) => setTotalAmount(e.target.value)}
+              style={{
+                fontSize: "1.5rem",
+                fontWeight: "bold",
+                color: "#4CAF50",
+              }}
             />
 
             <div className="split-toggle">
@@ -326,30 +198,28 @@ function App() {
             <label style={{ marginTop: "10px" }}>Note</label>
             <input
               type="text"
-              placeholder="Note..."
+              placeholder="Food, Travel..."
               value={payNote}
               onChange={(e) => setPayNote(e.target.value)}
             />
 
-            <button className="btn-primary" onClick={initiatePayment}>
-              PAY NOW
+            <button className="btn-primary" onClick={handleStartPayment}>
+              OPEN APP & TRACK
             </button>
-
-            {debugLog && (
-              <p
-                style={{
-                  fontSize: "0.6rem",
-                  color: "#555",
-                  marginTop: "10px",
-                  wordBreak: "break-all",
-                  fontFamily: "monospace",
-                }}
-              >
-                {debugLog}
-              </p>
-            )}
+            <p
+              style={{
+                fontSize: "0.7rem",
+                color: "#666",
+                marginTop: "5px",
+                textAlign: "center",
+              }}
+            >
+              Clicking this will launch your UPI app. Pay there, then confirm
+              here.
+            </p>
           </div>
 
+          {/* HISTORY CARD */}
           <div className="history-section">
             <h4>Recent Transactions</h4>
             {transactions.length === 0 ? (
@@ -359,7 +229,7 @@ function App() {
                 {transactions.slice(0, 5).map((t) => (
                   <li key={t.id} className="history-item">
                     <div>
-                      <span>{t.note}</span>
+                      <span style={{ fontWeight: "bold" }}>{t.note}</span>
                       {t.isSplit && (
                         <span
                           style={{
@@ -368,7 +238,7 @@ function App() {
                             color: "#888",
                           }}
                         >
-                          Full: ₹{t.fullAmount}
+                          Full Bill: ₹{t.fullAmount}
                         </span>
                       )}
                     </div>
@@ -379,16 +249,26 @@ function App() {
             )}
           </div>
           <button className="btn-reset" onClick={startNewMonth}>
-            New Month
+            Start New Month
           </button>
         </div>
       )}
 
+      {/* CONFIRMATION MODAL */}
       {showModal && (
         <div className="modal-overlay">
           <div className="modal-content">
             <h3>Confirm Payment</h3>
-            <p>Did it work?</p>
+            <p>
+              Did you complete the payment of <strong>₹{pendingTotal}</strong>{" "}
+              in your UPI app?
+            </p>
+            {pendingTotal !== pendingShare && (
+              <p style={{ fontSize: "0.8rem", color: "#aaa" }}>
+                (Only <strong>₹{pendingShare}</strong> will be deducted from
+                your budget)
+              </p>
+            )}
             <div className="btn-group">
               <button
                 className="btn-danger"
@@ -400,7 +280,7 @@ function App() {
                 className="btn-success"
                 onClick={() => confirmTransaction(true)}
               >
-                Yes
+                Yes, Done
               </button>
             </div>
           </div>
