@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { QrReader } from "react-qr-reader"; // IMPORT SCANNER
+import React, { useState, useEffect, useRef } from "react";
+import { Html5QrcodeScanner } from "html5-qrcode"; // NEW LIBRARY
 import "./App.css";
 
 function App() {
@@ -19,12 +19,12 @@ function App() {
 
   // UI State
   const [showModal, setShowModal] = useState(false);
-  const [showScanner, setShowScanner] = useState(false); // NEW: Scanner visibility
+  const [showScanner, setShowScanner] = useState(false);
   const [pendingTotal, setPendingTotal] = useState(0);
   const [pendingShare, setPendingShare] = useState(0);
   const [isSetupDone, setIsSetupDone] = useState(false);
 
-  // --- Auto-Load & Auto-Save (Same as before) ---
+  // --- Auto-Load Data ---
   useEffect(() => {
     const savedData = localStorage.getItem("upi_tracker_data");
     if (savedData) {
@@ -36,6 +36,7 @@ function App() {
     }
   }, []);
 
+  // --- Auto-Save Data ---
   useEffect(() => {
     if (isSetupDone) {
       const data = { budget, spent, transactions };
@@ -43,8 +44,67 @@ function App() {
     }
   }, [budget, spent, transactions, isSetupDone]);
 
-  // --- Handlers ---
+  // --- QR Scanner Logic (Fixed for Android) ---
+  useEffect(() => {
+    let scanner = null;
 
+    if (showScanner) {
+      // Small delay to ensure the div exists
+      setTimeout(() => {
+        scanner = new Html5QrcodeScanner(
+          "reader",
+          { fps: 10, qrbox: 250 },
+          /* verbose= */ false
+        );
+
+        scanner.render(
+          (decodedText) => {
+            handleScanSuccess(decodedText);
+            scanner.clear();
+            setShowScanner(false);
+          },
+          (errorMessage) => {
+            // ignore scan errors, they happen while searching
+          }
+        );
+      }, 100);
+    }
+
+    return () => {
+      if (scanner) {
+        scanner
+          .clear()
+          .catch((error) => console.error("Failed to clear scanner", error));
+      }
+    };
+  }, [showScanner]);
+
+  const handleScanSuccess = (text) => {
+    if (text) {
+      // Logic to extract UPI ID
+      if (text.startsWith("upi://")) {
+        try {
+          const params = new URLSearchParams(text.split("?")[1]);
+          const pa = params.get("pa"); // Payee Address
+
+          if (pa) {
+            setPayVpa(pa);
+            // Optional: Auto-fill note if 'pn' (name) exists in QR, but don't send it in payment
+            const pn = params.get("pn");
+            if (pn && !payNote) setPayNote(pn);
+          }
+        } catch (err) {
+          console.error("QR Parse Error", err);
+        }
+      } else if (text.includes("@")) {
+        setPayVpa(text); // Fallback for plain text VPAs
+      } else {
+        alert("Invalid UPI QR Code");
+      }
+    }
+  };
+
+  // --- Handlers ---
   const handleSetup = () => {
     if (budget > 0) setIsSetupDone(true);
   };
@@ -54,50 +114,21 @@ function App() {
     if (isSplit) setMyShare("");
   };
 
-  // --- NEW: QR SCANNING LOGIC ---
-  const handleScan = (result, error) => {
-    if (result) {
-      const text = result?.text;
-      if (text) {
-        // 1. Check if it's a UPI QR code
-        if (text.startsWith("upi://")) {
-          try {
-            // 2. Extract the 'pa' (Payee Address) parameter
-            const params = new URLSearchParams(text.split("?")[1]);
-            const pa = params.get("pa"); // Payee Address (VPA)
-            const pn = params.get("pn"); // Payee Name (Optional)
-
-            if (pa) {
-              setPayVpa(pa);
-              if (pn) setPayNote(`Payment to ${pn}`); // Auto-fill note with shop name
-              setShowScanner(false); // Close camera
-            }
-          } catch (err) {
-            console.error("Could not parse UPI QR");
-          }
-        } else {
-          // Fallback: If QR is just the VPA text (rare but possible)
-          if (text.includes("@")) {
-            setPayVpa(text);
-            setShowScanner(false);
-          }
-        }
-      }
-    }
-    // We ignore 'error' here because the scanner throws errors constantly while searching
-  };
-
   const initiatePayment = () => {
     const amountToPay = parseFloat(totalAmount);
     const amountToDeduct =
       isSplit && myShare ? parseFloat(myShare) : amountToPay;
 
     if (!amountToPay || amountToPay <= 0 || !payVpa) {
-      alert("Please enter a valid Amount and UPI ID (or Scan QR)");
+      alert("Please enter a valid Amount and UPI ID");
       return;
     }
 
-    const upiLink = `upi://pay?pa=${payVpa}&pn=Merchant&am=${amountToPay}&tn=${payNote}&cu=INR`;
+    // --- FIX 1: SIMPLIFIED UPI LINK ---
+    // Removed 'pn' (Payee Name) to fix "Limit Exceeded" error
+    const upiLink = `upi://pay?pa=${payVpa}&am=${amountToPay}&cu=INR`;
+
+    // Open App
     window.location.href = upiLink;
 
     setPendingTotal(amountToPay);
@@ -120,11 +151,10 @@ function App() {
       setSpent(newSpent);
       setTransactions([newTransaction, ...transactions]);
 
-      // Reset Form
       setTotalAmount("");
       setMyShare("");
       setPayNote("");
-      setPayVpa(""); // Clear VPA too
+      setPayVpa("");
       setIsSplit(false);
     }
   };
@@ -136,7 +166,7 @@ function App() {
     }
   };
 
-  // --- Render Helpers ---
+  // --- Render ---
   const budgetLeft = budget - spent;
   const progressPercent = Math.min((spent / budget) * 100, 100);
   const progressColor = progressPercent >= 100 ? "#ff4d4d" : "#4CAF50";
@@ -148,20 +178,15 @@ function App() {
         <div className="scanner-overlay">
           <div className="scanner-box">
             <h3>Scan UPI QR</h3>
-            <div className="scanner-viewport">
-              <QrReader
-                onResult={handleScan}
-                constraints={{ facingMode: "environment" }} // Use Back Camera
-                scanDelay={300}
-                containerStyle={{ width: "100%" }}
-              />
-            </div>
+            {/* THIS DIV IS REQUIRED FOR THE NEW LIBRARY */}
+            <div id="reader" width="100%"></div>
+
             <button
               className="btn-danger"
               onClick={() => setShowScanner(false)}
               style={{ marginTop: "20px" }}
             >
-              Cancel Scan
+              Close Camera
             </button>
           </div>
         </div>
@@ -206,21 +231,22 @@ function App() {
             <h3>Make a Payment</h3>
 
             <label>Payee UPI ID</label>
-            <div style={{ display: "flex", gap: "10px" }}>
+            <div style={{ display: "flex", gap: "10px", marginBottom: "15px" }}>
               <input
                 type="text"
                 placeholder="merchant@upi"
                 value={payVpa}
                 onChange={(e) => setPayVpa(e.target.value)}
-                style={{ marginBottom: "15px" }} // Fix margin inside flex
+                style={{ marginBottom: 0 }}
               />
               <button
                 onClick={() => setShowScanner(true)}
                 style={{
                   width: "60px",
                   padding: "0",
-                  height: "46px",
+                  height: "44px",
                   background: "#333",
+                  fontSize: "1.2rem",
                 }}
               >
                 📷
